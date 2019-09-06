@@ -1,0 +1,445 @@
+---
+title: "STAT 420 Data Analysis Project Report: Modeling Housing Price in Saratoga, NY"
+author: "Yingan Wang (yinganw2), Mingjie Wang (mingjie3), Ruopu Fan (ruopuf2)"
+date: "7/14/2019"
+output:
+  html_document: 
+    toc: yes
+  pdf_document: default
+urlcolor: cyan
+---
+
+# Introduction
+
+Real estate industry has intrigued us long enough that we want to figure out what determines the price of a house. Do the real estate agencies just make a number up as price, or do they price with some sorts of standards? And if so, our goal is to figure out the pricing standard in the real estate industry, and pinpoint those which are overpriced(not suggested to invest) and underpriced(please sieze the chance to invest). Interested in both statistics and economics, our group decides to applying statistical methods to predict housing price, and determine the factors that affect the value of houses and properties with modeling.
+
+The housing prices dataset we use includes 1,734 observations and 16 variables of house prices and properties in Saratoga, New York, 2006. Data is included in the `Project MOSAIC Data Sets`, collected by Candice Corvetti, and used in the "Stat 101" case study "How much is a Fireplace Worth". See also https://rdrr.io/cran/mosaicData/man/SaratogaHouses.html and  http://www.saratogacountyny.gov/departments/real-property-tax-service-agency/ for further references.
+
+Below list all the variables in the dataset:
+- `price` price (1000s of US dollars)
+- `lotSize` size of lot (square feet)
+- `waterfront` whether property includes waterfront
+- `age` age of house (years)
+- `landValue` value of land (1000s of US dollars)
+- `newConstruction` whether the property is a new construction
+- `centralAir` whether the house has central air
+- `fuel` fuel used for heating
+- `heating` type of heating system
+- `sewer` type of sewer system
+- `livingArea` living are (square feet)
+- `pctCollege` percent of neighborhood that graduated college
+- `bedrooms` number of bedrooms
+- `firplaces` number of fireplaces
+- `bathrooms` number of bathrooms (half bathrooms have no shower or tub)
+- `rooms` number of rooms
+
+The project objectives are:
+
+- Predicting the housing price in Saratoga, New York, 2006,
+
+- identifying houses that are extraordinarily expensive(overpriced) or inexpensive(underpriced),
+
+- and pinpointing factors that affect the housing price in Saratoga, New York, 2006.
+
+```{r}
+housing = read.delim("housing-prices-ge19.txt")
+# Exclude the last column from the data frame due to the ambiguity in reference
+housing = housing[, -17]
+colnames(housing) = c("price", "lotSize", "waterfront", "age", "landValue", "newConstruction", 
+                      "centralAir", "fuel", "heating", "sewer", "livingArea", "pctCollege",
+                      "bedrooms", "firplaces", "bathrooms", "rooms")
+str(housing)
+```
+
+***
+
+# Methods
+## Variables Preprocessing
+
+First, we generate an overview of all the continuous varibales(excluding all the factorized variables) in the housing data to have a grasp of the collinearity among all variables we have.
+
+```{r}
+# Exclude factorized variables
+col_continuous = c("price", "lotSize", "livingArea", "pctCollege", 
+              "bedrooms", "firplaces", "bathrooms", "rooms")
+house_continuous = subset(housing, select = col_continuous)
+pairs(house_continuous, col = "dodgerblue")
+```
+
+```{r}
+housing_additive = lm(price ~ ., data = housing)
+# Check for multicollinearity using alias() before getting VIF
+alias(housing_additive)
+levels(housing$fuel)
+levels(housing$heating)
+```
+
+We found that `fuelSolar`, `fuelUnknown/Other`, and `fuelNone` are highly correlated with `heatingNone` with `alias()`. This is because `fuel` variable stands for the type of fuel used for heating, while `heating` is the type of heating system in the house. Due to the synonymy between the two variables and the consideration of simplicity, we decide to use `heating`, which has 4 levels of factorization, and to get rid of `fuel`, which has 7 levels of factorization.
+
+```{r}
+housing = housing[, -8]
+housing_additive = lm(price ~ ., data = housing)
+# Check the VIF to verify collinearity
+car::vif(housing_additive)
+```
+
+From the VIF results above, we can tell that there are no significant collinearity within the variables. Then, we are able to randomly split the housing dataset to training and testing for future model selection.
+
+```{r}
+# Split the housing dataset to training and testing sets
+set.seed(42)
+housing_idx = sample(nrow(housing), 867)
+housing_trn = housing[housing_idx,]
+housing_tst = housing[-housing_idx,]
+```
+
+## Model Selecting
+
+In order to predict the housing price, we first need to select the right model that is concise and accurate. We apply AIC and BIC to find the best models out of both the simply additive model and the two-way interaction model, using LOOCV-RMSE to determine, AIC or BIC, which variable selecting method is more desirable.
+
+```{r}
+# Additive model selection
+# Select variables by AIC
+housing_additive_trn = lm(price ~ ., data = housing_trn)
+housing_aic = step(housing_additive_trn, direction = "backward", trace = 0)
+
+# select variables by BIC
+n = length(resid(housing_additive_trn))
+housing_bic = step(housing_additive_trn,  direction = "backward", k = log(n), trace = 0)
+
+# Compare AIC and BIC models with LOOCV-RMSE
+calc_loocv_rmse = function(model) {
+sqrt(mean((resid(model) / (1 - hatvalues(model))) ^ 2)) }
+calc_loocv_rmse(housing_aic)
+calc_loocv_rmse(housing_bic)
+```
+
+Since the AIC has less RMSE than the BIC model, we are able to say that we prefer the AIC one out of the two.
+
+```{r}
+names(coef(housing_aic))[-1]
+```
+
+```{r}
+housing_additive = lm(price ~ waterfront + age + landValue + newConstruction + centralAir 
+                      + livingArea + bedrooms + firplaces + bathrooms + rooms, 
+                      data = housing_trn)
+# Remove influential observations
+keep = cooks.distance(housing_aic) <= 4 / length(resid(housing_aic))
+housing_additive_removed = lm(price ~ waterfront + age + landValue + newConstruction + centralAir 
+                              + livingArea + bedrooms + firplaces + bathrooms + rooms, 
+                              data = housing_trn, subset = keep)
+```
+
+
+```{r}
+# try for transformation
+housing_additive_log = lm(log(price) ~ waterfront + age + landValue + newConstruction + centralAir 
+                      + livingArea + bedrooms + firplaces + bathrooms + rooms, data = housing_trn)
+# remove influential observations
+keep_2 = cooks.distance(housing_additive_log) <= 4 / length(resid(housing_additive_log))
+housing_additive_log_removed = lm(log(price) ~ waterfront + age + landValue + newConstruction 
+                                  + centralAir + livingArea + bedrooms + firplaces + bathrooms 
+                                  + rooms, data = housing_trn, subset = keep_2)
+```
+
+
+We'd like to repeat the process above to experiment on two-way interaction.
+
+```{r}
+# Select two-way interaction variables by AIC
+housing_interaction_trn = lm(price ~ .^2, data = housing_trn)
+housing_interaction_aic = step(housing_interaction_trn, direction = "backward", trace = 0)
+
+# select variables by BIC
+n = length(resid(housing_interaction_trn))
+housing_interaction_bic = step(housing_interaction_trn,  direction = "backward", k = log(n), trace = 0)
+
+# Compare AIC and BIC models with LOOCV-RMSE
+calc_loocv_rmse = function(model) {
+  sqrt(mean((resid(model) / (1 - hatvalues(model))) ^ 2))
+}
+calc_loocv_rmse(housing_interaction_aic)
+calc_loocv_rmse(housing_interaction_bic)
+```
+
+BIC has less RMSE than AIC, for two way interaction model, we prefer using BIC model.
+
+```{r}
+names(coef(housing_interaction_bic))[-1]
+```
+
+```{r}
+housing_int = lm(price ~ lotSize + age + landValue + newConstruction 
+                 + centralAir + livingArea + pctCollege + bedrooms + firplaces 
+                 + bathrooms + rooms + lotSize:landValue + lotSize:livingArea 
+                 + age:landValue + age:centralAir + age:livingArea + age:pctCollege 
+                 + age:bedrooms + age:firplaces + landValue:newConstruction 
+                 + livingArea:bedrooms + bedrooms:rooms + bathrooms:rooms, data = housing_trn)
+
+# remove influential observations
+keep_2_int = cooks.distance(housing_interaction_bic) <= 4 / length(resid(housing_interaction_bic))
+housing_2_int_removed = lm(price ~ lotSize + age + landValue + newConstruction 
+                           + centralAir + livingArea + pctCollege + bedrooms + firplaces 
+                           + bathrooms + rooms + lotSize:landValue + lotSize:livingArea 
+                           + age:landValue + age:centralAir + age:livingArea + age:pctCollege 
+                           + age:bedrooms + age:firplaces + landValue:newConstruction 
+                           + livingArea:bedrooms + bedrooms:rooms + bathrooms:rooms, 
+                           data = housing_trn, subset = keep_2_int)
+```
+
+
+```{r}
+# try for transformation
+housing_2_int_log = lm(log(price) ~ lotSize + age + landValue + newConstruction 
+                           + centralAir + livingArea + pctCollege + bedrooms + firplaces 
+                           + bathrooms + rooms + lotSize:landValue + lotSize:livingArea 
+                           + age:landValue + age:centralAir + age:livingArea + age:pctCollege 
+                           + age:bedrooms + age:firplaces + landValue:newConstruction 
+                           + livingArea:bedrooms + bedrooms:rooms + bathrooms:rooms, 
+                           data = housing_trn)
+# remove influential observations
+keep_2_int_log = cooks.distance(housing_2_int_log) <= 4 / length(resid(housing_2_int_log))
+housing_2_int_log_removed = lm(log(price) ~ lotSize + age + landValue + newConstruction 
+                           + centralAir + livingArea + pctCollege + bedrooms + firplaces 
+                           + bathrooms + rooms + lotSize:landValue + lotSize:livingArea 
+                           + age:landValue + age:centralAir + age:livingArea + age:pctCollege 
+                           + age:bedrooms + age:firplaces + landValue:newConstruction 
+                           + livingArea:bedrooms + bedrooms:rooms + bathrooms:rooms, 
+                           data = housing_trn, subset = keep_2_int_log)
+```
+
+
+***
+
+# Results
+
+We are going to select above models depending on fitted vs. residual plot, qq plot, shapiro.test, b-p test, and therefore make data predictions based on the model we select.
+
+```{r}
+diagnostics = function(model, pcol = "grey", lcol = "dodgerblue", alpha = 0.05,
+                       plotit = TRUE, testit = TRUE) {
+  if (plotit == TRUE) {
+    par(mfrow = c(1, 2))
+    # fitted versus residuals
+    plot(fitted(model), resid(model),
+         col = pcol, pch = 20, cex = 1.5,
+         xlab = "Fitted", ylab = "Residuals",
+         main = "Fitted versus Residuals")
+    abline(h = 0, col = lcol, lwd = 2)
+    grid()
+
+    # qq-plot
+    qqnorm(resid(model), col = pcol, pch = 20, cex = 1.5)
+    qqline(resid(model), col = lcol, lwd = 2)
+    grid()
+  }
+  if (testit == TRUE) {
+    # p-value and decision for Shapiro test & b-p test
+    p_val_shapiro = shapiro.test(resid(model))$p.value
+    decision_shapiro = ifelse(p_val_shapiro < alpha, "Reject", "Fail to Reject")
+    library(lmtest)
+    p_val_bp = bptest(model)$p.value
+    decision_bp = ifelse(p_val_bp < alpha, "Reject", "Fail to Reject")
+    
+    list(shapiro = c(p_val = p_val_shapiro, decision = decision_shapiro), 
+         bptest = c(p_val = p_val_bp, decision = decision_bp))
+  }
+}
+```
+
+- Diagnostics for additive model without influential points:
+
+```{r}
+diagnostics(housing_additive_removed, testit = FALSE, pcol = "dodgerblue", lcol = "darkorange")
+```
+
+We are able to see from the fitted vs. residuals plot and normal Q-Q plot above that `y = 0` is not at the middle of the fitted vs. residuals plot, and the observations at lower and upper quantiles do not align well with the line in the normal Q-Q plot.
+
+```{r, message=FALSE}
+library(zoo)
+```
+
+```{r}
+diagnostics(housing_additive_removed, plotit = FALSE)
+```
+
+Applying the shapiro.test and b-p test to this additive model, we end up getting extremely low p-values for both the Shapiro-Wilk test and the Breusch-Pagan test. We are able to say that both the normality and the equal variance assumptions are suspect. We cannot claim that the observations in this additive model is sampled from a normal distribution, nor could we say that the errors have constant variance about the true model.
+
+- Diagnostics for log-transformed additive model without influential points:
+
+```{r}
+diagnostics(housing_additive_log_removed, testit = FALSE, pcol = "dodgerblue", lcol = "darkorange")
+```
+
+We are able to see from the fitted vs. residuals plot and normal Q-Q plot above that `y = 0` is at the middle of the fitted vs. residuals plot, and all observations in the transformed additive model align with the line in the normal Q-Q plot well.
+
+```{r}
+diagnostics(housing_additive_log_removed, plotit = FALSE)
+```
+Applying the shapiro.test and b-p test to this transformed additive model, we end up getting a high p-value for Shapiro-Wilk test and an extremely low p-value for the Breusch-Pagan test. We are able to say that the normality assumption is not suspect, while the equal variance assumption is violated. We can say the observations in this additive model is sampled from a normal distribution, but can not confirm that the errors have constant variance about the true model.
+
+- Diagnostics for two way interaction model without influential points:
+
+```{r}
+diagnostics(housing_2_int_removed, testit = FALSE, pcol = "dodgerblue", lcol = "darkorange")
+```
+
+We are able to see from the fitted vs. residuals plot and normal Q-Q plot above that `y = 0` is at the lower side of the fitted vs. residuals plot, and the observations at the upper quantiles in the two-way interaction model do not align with the line in the normal Q-Q plot well.
+
+```{r}
+diagnostics(housing_2_int_removed, plotit = FALSE)
+```
+Applying the shapiro.test and b-p test to this two-way intereaction model, we end up getting extremely low p-values for both the Shapiro-Wilk test and the Breusch-Pagan test. We are able to say that both the normality assumption and the equal variance assumption are violated. We cannot say the observations in this two-way interaction model is sampled from a normal distribution, nor can we confirm that the errors have constant variance about the true model.
+
+- Diagnostics for log-transformed two way interaction model without influential points:
+
+```{r}
+diagnostics(housing_2_int_log_removed, testit = FALSE, pcol = "dodgerblue", lcol = "darkorange")
+```
+
+However, after applying logarithm to the response variable in the two-way interaction model, the transformed two-way interaction model has a fitted vs. residuals model that has `y = 0` approximately at the middle of the plot, and all the observations normal Q-Q plot align well with the line.
+
+```{r}
+diagnostics(housing_2_int_log_removed, plotit = FALSE)
+```
+Applying the shapiro.test and b-p test to this transformed two-way intereaction model, we end up getting high p-values for both the Shapiro-Wilk test and the Breusch-Pagan test. Though the p-value of the Breusch-Pagan test is less than $\alpha = 0.05$, but we can say that 0.0460052305900943 is approximately equal to the significance level of 0.05. So we are able to accept both the normality assumption and the equal variance assumption are violated. We are able to say the observations in this transformed two-way interaction model is sampled from a normal distribution, and also that the errors have constant variance about the true model.
+
+## Data Prediction
+```{r}
+accuracy_percent = function(model, dataset = housing_tst, type = "prediction", conf_level = 0.99, if_logged = TRUE) {
+  price_pred = predict(model, newdata = dataset, interval = type, level = conf_level)
+  count = 0
+  for (i in 1:nrow(dataset)) {
+    if (if_logged == TRUE) {
+      if(dataset[i,1] > exp(price_pred[i,2]) && dataset[i,1] < exp(price_pred[i,3])) {
+        count = count + 1
+      }
+    } else {
+      if(dataset[i,1] > price_pred[i,2] && dataset[i,1] < price_pred[i,3]) {
+        count = count + 1
+      }
+    }
+  }
+  count / nrow(dataset)
+}
+
+(add_general = accuracy_percent(housing_additive_removed, if_logged = FALSE))
+(add_log_general = accuracy_percent(housing_additive_log_removed))
+(int_general = accuracy_percent(housing_2_int_removed, if_logged = FALSE))
+(int_log_general = accuracy_percent(housing_2_int_log_removed))
+```
+
+According to the accuracy test above, we are able to say that the additive transformed model is better at predicting in general. However, we do want to see if the change in the price at different percentiles makes a difference for the accuracy test result. So we subset the upper 25% and the lower 25% of the `housing` data, and applied the two model we obtained to see which one is more accurate in terms of outliers, high leverage, and potential influential points.
+
+```{r}
+housing_tst_top = housing_tst[housing_tst$price >= quantile(housing_trn$price, 0.75),]
+add_top = accuracy_percent(housing_additive_removed, if_logged = FALSE, dataset = housing_tst_top)
+add_log_top = accuracy_percent(housing_additive_log_removed, dataset = housing_tst_top)
+int_top = accuracy_percent(housing_2_int_removed, if_logged = FALSE, dataset = housing_tst_top)
+int_log_top = accuracy_percent(housing_2_int_log_removed, dataset = housing_tst_top)
+```
+
+```{r}
+housing_tst_low = housing_tst[housing_tst$price <= quantile(housing_trn$price, 0.25),]
+add_low = accuracy_percent(housing_additive_removed, if_logged = FALSE, dataset = housing_tst_low)
+add_log_low = accuracy_percent(housing_additive_log_removed, dataset = housing_tst_low)
+int_low = accuracy_percent(housing_2_int_removed, if_logged = FALSE, dataset = housing_tst_low)
+int_log_low = accuracy_percent(housing_2_int_log_removed, dataset = housing_tst_low)
+```
+
+```{r}
+table = data.frame("General" = c("Additive" = add_general,
+                                 "Additive Transformed" = add_log_general, 
+                                 "Interaction" = int_general,
+                                 "Interaction Transformed" = int_log_general),
+                   "Upper 25%" = c("Additive" = add_top,
+                                 "Additive Transformed" = add_log_top, 
+                                 "Interaction" = int_top,
+                                 "Interaction Transformed" = int_log_top),
+                   "Lower 25%" = c("Additive" = add_low,
+                                 "Additive Transformed" = add_log_low, 
+                                 "Interaction" = int_low,
+                                 "Interaction Transformed" = int_log_low))
+knitr::kable(table, "html")
+```
+
+
+According to the table above, it is worth it to notice that the prediction interval of the transformed additive model covers the most housing price in market. It has the highest accuracy rate for the overall testing dataset and the upper 25% of the testing dataset among all the four models we've obtained. However, it is not robust when facing the lower 25% percentile of the testing dataset. It seems that the additive model handles the lower 25% of the testing dataset the best. This occurrence may be a result of the abnormal observations in the lower 25% of the testing dataset. We need further discussion of this phenomenon in future research.
+
+
+## Conclusion
+
+To recap, in method section, we first chose the AIC version for the additive model after variable selection. Yet even if influencial points are removed, the graphs still showed violation of assumptions. So we attempted to log-transformed the response and obtained the selected additive model that looked good on all assumptions except the b-p test. We then repeated the process for the two-way interaction model. As a result, the final model for two-way interaction also passed all other tests except the b-p test at the level of 0.05. Compared to the extremely low p-value for the additive model, the interaction model reached a higher p-value of 0.046 which is close to 0.05. We can actually fail to reject the null with a smaller alpha for the interaction model. Because of this, we conclude that the two-way interaction model is more significant overall, as it does not violate the LINE assumptions:
+
+\[
+log(Price) = \beta_0 + \beta_1 x_{lotSize} + \beta_2 x_{age} + \beta_3 x_{landValue} + \beta_4 x_{newConstruction} + \beta_5 x_{CentralAir} + \beta_6 x_{livingArea} + \beta_7 x_{pctCollege} + \beta_8 x_{bedrooms} + \beta_9 x_{firplaces} + \beta_{10} x_{bathrooms} + \beta_{11} x_{rooms} + \beta_{12} x_{lotSize} x_{landValue} + \beta_{13} x_{lotSize} x_{livingArea} + \beta_{14} x_{age} x_{landValue} + \beta_{15} x_{age} x_{centralAir} + \beta_{16} x_{age} x_{livingArea} + \beta_{17} x_{age}  x_{pctCollege} + \beta_{18} x_{age} x_{bedrooms} + \beta_{19} x_{age} x_{firplaces} + \beta_{20} x_{landValue} x_{newContruction} + \beta_{21} x_{livingArea} x_{bedrooms} + \beta_{22} x_{bedrooms} x_{rooms} + \beta_{23} x_{bathrooms} x_{rooms} + \epsilon
+\]
+
+But for predicting housing in real life, results above showed that the additive model worked better. We therefore decided to use the selected additive model to further predict the overpriced and underpriced housing:
+
+\[
+log(Price) = \beta_0 + \beta_1 x_{waterfront} + \beta_2 x_{age} + \beta_3 x_{landValue} + \beta_4 x_{newConstruction} + \beta_5 x_{CentralAir} + \beta_6 x_{livingArea} + \beta_7 x_{bedrooms} + \beta_8 x_{rooms} + \epsilon
+\]
+
+
+***
+
+# Discussion
+
+
+## Overpriced and Underpriced Housing Identification
+
+We not only want to find a "best" model that is able to make predictions of housing price that is as close to the real market price as possible, we also want to utilize this "best" model to spotlight overpriced and underpriced housing, so that whoever intended to buy houses in Saratoga, NY, is able to get houses that satisfy their requirements with a great deal. The Model Selection section above has proved that the additive transformed model `housing_additive_log_removed` is more accurate, then in this section we are going to filter all the overpriced and underpriced houses with `housing_additive_log_removed`. Because there is no strict definition of "overpricing" and "underpricing", we define that **any house with price that is at least 25% greater than the predicted price is overpriced, and any house with price that is at least 25% less than the predicted price is underpriced**.
+
+```{r}
+pred_tst_price = exp(predict(housing_additive_log_removed, newdata = housing_tst))
+# Underpriced prediction
+underpriced_data = housing_tst[((pred_tst_price - housing_tst$price) / pred_tst_price) > 0.25,]
+# Overpriced prediction
+overpriced_data = housing_tst[((housing_tst$price - pred_tst_price) / pred_tst_price) > 0.25,]
+```
+
+This function is in fact very applicable. For example, if any clients with a budget of $100,000 want a house with 8 rooms and ask for a great deal, we are able to use the underpriced dataset obtained from `housing_additive_log_removed` to match houses on sell for the clients.
+
+```{r}
+# Filter with budget and requirements to get ideal underpriced houses
+underpriced_data[underpriced_data$rooms == 8 & underpriced_data$price < 100000,]
+```
+
+## Predictor Inference
+
+```{r}
+coef(housing_additive_log_removed)
+```
+
+We can see that, except `age` and `newConstruction`, other selected predictors have a positive relationship with the response, and most estimates are pretty reasonable. For example, we can expect houses with larger living area and more rooms to have higher prices. We can also expect an older house to be less expensive.
+
+It is interesting though, that a new construction can actually lower the house's price for `r exp(summary(housing_additive_log_removed)$coefficients["newConstruction", "Estimate"]) * 1000` dollars. There may be many reasons for this, but an obvious one is that property owners often start selling a new house with a discount price to attract buyers. Since new houses have relatively less information compared to other housings, people may consider living in a house that is just built as a risk. So in this case, lowering the price of a newly built house may help increase the sales. As our model concludes, buyers looking for cheap houses in Saratoga, NY can therefore seek for either new contructions or old houses.
+
+```{r}
+coef(housing_2_int_log_removed)
+```
+
+Although as our prediction showed, this interaction model may not work well for accurately predicting housing prices in saratoga, NY, the model is still more flexible and significant. We can look at the effects of predictors here.
+
+From the interaction terms, we can see that how `price` and `age` are related depends on several other predictors including `landValue`, `centralAir`, `livingArea`, `pctCollege`, `bedrooms` and `firplaces`. That is to say, an increase in the age of a house may not lead to a drop in its price, if, for example, its land value is very high. This is reasonable in real life.
+
+Thus we can conclude that the two-way interaction model is more helpful if we want to explore the importance of each predictor. Buyers and sellers in saratoga, NY can refer to the estimates from this model to have a better understanding of house prices.
+
+***
+
+# Appendix
+Due to the limitation of space, below attached the head of dataframe of underpriced data and overpriced data from `Overpriced and Underpriced Identification` section. 
+```{r}
+head(underpriced_data)
+head(overpriced_data)
+```
+
+
+
+
+
+
+
+
